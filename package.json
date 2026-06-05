@@ -1,0 +1,36 @@
+{
+  "name": "login-helper-v2",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Personal Chrome extension that remembers which login method you use on each website",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "tsc --noEmit",
+    "postinstall": "wxt prepare",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "firebase": "^12.14.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/chrome": "^0.1.42",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@wxt-dev/module-react": "^1.2.2",
+    "jsdom": "^26.0.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.8",
+    "wxt": "^0.20.26"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+.output
+.wxt
+stats.html
+stats-*.json
+
+.env
+.env.*.local
+.env.local
+
+*.pem
+key.pem
+
+*.log
+.DS_Store

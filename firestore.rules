@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Login Helper v2 — Firestore security rules.
+//
+// Source of truth for what's deployed. Run `firebase deploy --only firestore:rules`
+// after editing. Every entry is scoped to a single Google UID; a user can only
+// read/write their own documents.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /entries/{entryId} {
+      // Read: only the document's owner.
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.userId;
+
+      // Create: must be authenticated, writing under their own UID, and the
+      // document shape must be exactly the fields defined in `src/lib/types.ts`.
+      // `hasOnly(...)` rejects unknown keys (e.g. someone trying to inject
+      // an `adminFlag`); the required fields are still asserted via `hasAll`.
+      allow create: if request.auth != null
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.keys().hasOnly(['userId', 'domain', 'loginType', 'loginDetail', 'notes', 'createdAt', 'updatedAt'])
+                    && request.resource.data.keys().hasAll(['userId', 'domain', 'loginType', 'createdAt', 'updatedAt']);
+
+      // Update: owner only, userId must not change, and only the writable
+      // fields can be modified (no rewriting createdAt or sneaking in new keys).
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.userId
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['domain', 'loginType', 'loginDetail', 'notes', 'updatedAt']);
+      allow delete: if request.auth != null
+                    && request.auth.uid == resource.data.userId;
+    }
+  }
+}
