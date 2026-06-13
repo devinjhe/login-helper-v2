@@ -208,6 +208,87 @@ describe("getAllEntries", () => {
   });
 });
 
+describe("addSavedLogin", () => {
+  it("writes a trimmed value scoped to the current user with a timestamp", async () => {
+    addDocMock.mockResolvedValueOnce({ id: "sl-1" });
+    const { addSavedLogin } = await import("@/lib/storage");
+
+    const result = await addSavedLogin("  me@example.com  ");
+
+    expect(addDocMock).toHaveBeenCalledTimes(1);
+    const [, payload] = addDocMock.mock.calls[0];
+    expect(payload.value).toBe("me@example.com");
+    expect(payload.userId).toBe("user-1");
+    expect(typeof payload.createdAt).toBe("number");
+    expect(result.id).toBe("sl-1");
+    expect(result.userId).toBe("user-1");
+  });
+
+  it("throws when there is no signed-in user", async () => {
+    authState.currentUser = null;
+    const { addSavedLogin } = await import("@/lib/storage");
+    await expect(addSavedLogin("me@x")).rejects.toThrow(/sign/i);
+    expect(addDocMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteSavedLogin", () => {
+  it("calls deleteDoc with the right doc reference", async () => {
+    deleteDocMock.mockResolvedValueOnce(undefined);
+    const { deleteSavedLogin } = await import("@/lib/storage");
+    await deleteSavedLogin("sl-1");
+    expect(deleteDocMock).toHaveBeenCalledTimes(1);
+    expect(docMock).toHaveBeenCalledWith(expect.anything(), "savedLogins", "sl-1");
+  });
+
+  it("throws when there is no signed-in user", async () => {
+    authState.currentUser = null;
+    const { deleteSavedLogin } = await import("@/lib/storage");
+    await expect(deleteSavedLogin("sl-1")).rejects.toThrow(/sign/i);
+  });
+});
+
+describe("getSavedLogins", () => {
+  it("returns every saved login for the signed-in user, scoped by userId", async () => {
+    const docs = [
+      { id: "a", data: () => ({ value: "me@x", userId: "user-1", createdAt: 1 }) },
+      { id: "b", data: () => ({ value: "me@y", userId: "user-1", createdAt: 2 }) },
+    ];
+    getDocsMock.mockResolvedValueOnce({ docs });
+
+    const { getSavedLogins } = await import("@/lib/storage");
+    const result = await getSavedLogins();
+
+    expect(whereMock).toHaveBeenCalledWith("userId", "==", "user-1");
+    expect(result.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(result[0].value).toBe("me@x");
+  });
+
+  it("throws when there is no signed-in user", async () => {
+    authState.currentUser = null;
+    const { getSavedLogins } = await import("@/lib/storage");
+    await expect(getSavedLogins()).rejects.toThrow(/sign/i);
+  });
+
+  const malformedSavedLogins: Array<[string, Record<string, unknown>]> = [
+    ["value missing", { userId: "user-1", createdAt: 1 }],
+    ["userId missing", { value: "me@x", createdAt: 1 }],
+    ["createdAt missing", { value: "me@x", userId: "user-1" }],
+    ["value wrong type", { value: 123, userId: "user-1", createdAt: 1 }],
+    ["userId wrong type", { value: "me@x", userId: 7, createdAt: 1 }],
+    ["createdAt wrong type", { value: "me@x", userId: "user-1", createdAt: "1" }],
+  ];
+
+  it.each(malformedSavedLogins)(
+    "throws a clear error for malformed saved-login doc (%s)",
+    async (_label, raw) => {
+      getDocsMock.mockResolvedValueOnce({ docs: [{ id: "bad", data: () => raw }] });
+      const { getSavedLogins } = await import("@/lib/storage");
+      await expect(getSavedLogins()).rejects.toThrow(/malformed saved login/i);
+    },
+  );
+});
+
 function mkDoc(id: string, data: Omit<Entry, "id">) {
   return { id, data: () => data };
 }

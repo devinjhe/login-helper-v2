@@ -39,7 +39,34 @@ describe("EntryRow relativeTime rendering", () => {
   ];
 
   it.each(cases)("renders the %s branch", (_label, createdAt, expected) => {
-    render(<EntryRow entry={entry(createdAt)} onChanged={vi.fn()} showDomain={false} />);
+    render(
+      <EntryRow
+        entry={entry(createdAt)}
+        onChanged={vi.fn()}
+        savedLogins={[]}
+        onSaveValue={vi.fn()}
+        onDeleteSaved={vi.fn()}
+      />,
+    );
     expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+});
+
+describe("EntryRow headline", () => {
+  it("leads with the site, login type as subheader (uniform across tabs)", () => {
+    render(
+      <EntryRow
+        entry={entry(Date.now())}
+        onChanged={vi.fn()}
+        savedLogins={[]}
+        onSaveValue={vi.fn()}
+        onDeleteSaved={vi.fn()}
+      />,
+    );
+    // Domain is the headline; login type is the subheader.
+    const domain = screen.getByText("github.com");
+    const loginType = screen.getByText("Google");
+    expect(domain).toHaveClass("font-medium");
+    expect(loginType).not.toHaveClass("font-medium");
   });
 });

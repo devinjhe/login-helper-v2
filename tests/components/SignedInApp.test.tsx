@@ -28,6 +28,10 @@ vi.mock("@/lib/storage", () => ({
   // Real implementations not used by these tests but referenced by the module export.
   updateEntry: vi.fn(),
   deleteEntry: vi.fn(),
+  // Saved logins are loaded on mount; default to an empty list.
+  getSavedLogins: vi.fn(async () => []),
+  addSavedLogin: vi.fn(),
+  deleteSavedLogin: vi.fn(),
 }));
 vi.mock("@/lib/firebase", () => ({
   signOutCurrentUser: signOutMock,
@@ -39,6 +43,13 @@ vi.mock("@/lib/firebase", () => ({
 import { SignedInApp } from "@/entrypoints/popup/SignedInApp";
 
 const fakeUser = { uid: "u1", email: "me@example.com" };
+
+// The login type is a Radix Select (a combobox button), not a text input.
+// Open it and pick the named option.
+async function selectLoginType(name: string) {
+  await userEvent.click(screen.getByRole("combobox", { name: /login type/i }));
+  await userEvent.click(await screen.findByRole("option", { name }));
+}
 
 function entry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -53,7 +64,7 @@ function entry(overrides: Partial<Entry> = {}): Entry {
   };
 }
 
-describe("SignedInApp — active-domain suggest", () => {
+describe("SignedInApp — This site tab (default)", () => {
   beforeEach(() => {
     getActiveTabDomainMock.mockReset();
     getAllEntriesMock.mockReset();
@@ -71,7 +82,8 @@ describe("SignedInApp — active-domain suggest", () => {
     render(<SignedInApp user={fakeUser as any} />);
 
     expect(await screen.findByText(/entries for/i)).toBeInTheDocument();
-    expect(screen.getByText("github.com")).toBeInTheDocument();
+    // "github.com" appears in the header plus each row's headline (2 rows here).
+    expect(screen.getAllByText("github.com").length).toBeGreaterThanOrEqual(2);
     expect(await screen.findByText("Google")).toBeInTheDocument();
     expect(screen.getByText("Email")).toBeInTheDocument();
     expect(screen.getByText("primary@x.test")).toBeInTheDocument();
@@ -181,7 +193,7 @@ describe("SignedInApp — Add entry form", () => {
     render(<SignedInApp user={fakeUser as any} />);
     await userEvent.click(await screen.findByRole("button", { name: /add entry/i }));
 
-    await userEvent.type(screen.getByLabelText(/login type/i), "Google");
+    await selectLoginType("Google");
     await userEvent.type(screen.getByLabelText(/login detail/i), "me@x");
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
@@ -206,7 +218,7 @@ describe("SignedInApp — Add entry form", () => {
     const domain = screen.getByLabelText(/^domain$/i);
     await userEvent.clear(domain);
     await userEvent.type(domain, "intranet.corp");
-    await userEvent.type(screen.getByLabelText(/login type/i), "SSO");
+    await selectLoginType("SSO");
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(addEntryMock).toHaveBeenCalledTimes(1));

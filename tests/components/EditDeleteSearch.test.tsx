@@ -30,6 +30,10 @@ vi.mock("@/lib/storage", () => ({
   addEntry: addEntryMock,
   updateEntry: updateEntryMock,
   deleteEntry: deleteEntryMock,
+  // Saved logins are loaded on mount; default to an empty list.
+  getSavedLogins: vi.fn(async () => []),
+  addSavedLogin: vi.fn(),
+  deleteSavedLogin: vi.fn(),
 }));
 vi.mock("@/lib/firebase", () => ({
   signOutCurrentUser: signOutMock,
@@ -80,9 +84,10 @@ describe("Edit", () => {
     render(<SignedInApp user={fakeUser as any} />);
     await userEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
 
-    // Use the form's own Domain label (not the search input's "Search all domains" aria-label).
+    // Use the form's own Domain label (not the search input's "Search entries" aria-label).
     expect(screen.getByLabelText(/^domain$/i)).toHaveValue("github.com");
-    expect(screen.getByLabelText(/login type/i)).toHaveValue("Google");
+    // Login type is a Radix Select (combobox), so its current value shows as text.
+    expect(screen.getByRole("combobox", { name: /login type/i })).toHaveTextContent("Google");
     expect(screen.getByLabelText(/login detail/i)).toHaveValue("me@x");
     expect(screen.getByLabelText(/notes/i)).toHaveValue("personal");
   });
@@ -122,29 +127,45 @@ describe("Edit", () => {
     expect(await screen.findByText(/updated/)).toBeInTheDocument();
   });
 
-  it("exposes the login-type suggestion datalist when the edit form is open", async () => {
+  it("offers the predefined login types (incl. Other) in the edit form dropdown", async () => {
     getActiveTabDomainMock.mockResolvedValueOnce("github.com");
     getAllEntriesMock.mockResolvedValueOnce([
       entry({ id: "e1", domain: "github.com", loginType: "Google" }),
     ]);
 
-    const { container } = render(<SignedInApp user={fakeUser as any} />);
+    render(<SignedInApp user={fakeUser as any} />);
     await userEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
 
-    // The login-type input must reference the same datalist id, and the
-    // datalist must actually be in the DOM (the bug was that it lived inside
-    // AddEntryForm only — empty when only the edit form was mounted).
-    const loginTypeInput = screen.getByLabelText(/login type/i) as HTMLInputElement;
-    expect(loginTypeInput.getAttribute("list")).toBe("login-type-suggestions");
+    // The login type is a Radix Select; opening it lists every predefined type.
+    await userEvent.click(screen.getByRole("combobox", { name: /login type/i }));
+    for (const type of ["Google", "GitHub", "Apple", "Email", "Username", "SSO", "Other"]) {
+      expect(screen.getByRole("option", { name: type })).toBeInTheDocument();
+    }
+  });
 
-    const datalist = container.querySelector("#login-type-suggestions");
-    expect(datalist).not.toBeNull();
-    const optionValues = Array.from(datalist!.querySelectorAll("option")).map((o) =>
-      (o as HTMLOptionElement).value,
-    );
-    expect(optionValues).toEqual(
-      expect.arrayContaining(["Google", "GitHub", "Apple", "Email", "Username", "SSO"]),
-    );
+  it("preserves a legacy login type when editing only other fields", async () => {
+    // An older entry may hold a loginType outside the predefined list. Editing
+    // an unrelated field must not rewrite loginType (the Select injects the
+    // legacy value as an option; computePatch yields no loginType change).
+    getActiveTabDomainMock.mockResolvedValueOnce("github.com");
+    getAllEntriesMock.mockResolvedValue([
+      entry({ id: "e1", domain: "github.com", loginType: "Okta", notes: "before" }),
+    ]);
+    updateEntryMock.mockResolvedValueOnce(undefined);
+
+    render(<SignedInApp user={fakeUser as any} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
+
+    // The legacy value is shown and preserved on the trigger.
+    expect(screen.getByRole("combobox", { name: /login type/i })).toHaveTextContent("Okta");
+    const notes = screen.getByLabelText(/notes/i);
+    await userEvent.clear(notes);
+    await userEvent.type(notes, "after");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(updateEntryMock).toHaveBeenCalledTimes(1));
+    // Patch carries only the changed notes — loginType is untouched.
+    expect(updateEntryMock).toHaveBeenCalledWith("e1", { notes: "after" });
   });
 
   it("shows an error alert and keeps the form open when updateEntry rejects", async () => {
@@ -259,11 +280,11 @@ describe("Delete", () => {
   });
 });
 
-describe("Cross-domain search", () => {
-  it("swaps to search results when the search box has text, and back when cleared", async () => {
+describe("All tab + cross-field search", () => {
+  it("browses every entry on the All tab and filters within it by search", async () => {
     getActiveTabDomainMock.mockResolvedValueOnce("github.com");
-    // Single fetch covers both suggest mode (filter to active domain) and
-    // search mode (substring filter across all entries).
+    // Single fetch covers both the active-domain "This site" tab and the "All"
+    // tab; search filters within whichever tab is active.
     getAllEntriesMock.mockResolvedValue([
       entry({ id: "e1", domain: "github.com", loginType: "Google" }),
       entry({ id: "x1", domain: "gitlab.com", loginType: "Email" }),
@@ -271,39 +292,76 @@ describe("Cross-domain search", () => {
     ]);
 
     render(<SignedInApp user={fakeUser as any} />);
+    // "This site" (default) shows only github.com's entry.
     await screen.findByText(/entries for/i);
-
-    const box = screen.getByRole("searchbox", { name: /search/i });
-    await userEvent.type(box, "git");
-
-    expect(await screen.findByText(/search results for/i)).toBeInTheDocument();
-    expect(screen.getByText("Email")).toBeInTheDocument();
-    // amazon.com excluded from "git" search; github.com Google still visible.
-    expect(screen.getAllByText("Google")).toHaveLength(1);
-    expect(screen.queryByText("SSO")).not.toBeInTheDocument();
-
-    // Clear -> back to suggest view.
-    await userEvent.clear(box);
-    expect(await screen.findByText(/entries for/i)).toBeInTheDocument();
-    expect(screen.queryByText(/search results for/i)).not.toBeInTheDocument();
-    // Suggest mode shows only github.com (active domain).
     expect(screen.queryByText("Email")).not.toBeInTheDocument();
     expect(screen.queryByText("SSO")).not.toBeInTheDocument();
+
+    // Switch to All — every entry is listed.
+    await userEvent.click(screen.getByRole("tab", { name: /^all$/i }));
+    expect(await screen.findByText(/all saved logins/i)).toBeInTheDocument();
+    expect(screen.getByText("Google")).toBeInTheDocument();
+    expect(screen.getByText("Email")).toBeInTheDocument();
+    expect(screen.getByText("SSO")).toBeInTheDocument();
+
+    // Search "git" within All filters to github.com + gitlab.com.
+    const box = screen.getByRole("searchbox", { name: /search/i });
+    await userEvent.type(box, "git");
+    expect(screen.getByText("Google")).toBeInTheDocument();
+    expect(screen.getByText("Email")).toBeInTheDocument();
+    expect(screen.queryByText("SSO")).not.toBeInTheDocument();
+
+    // Clear -> All tab shows everything again.
+    await userEvent.clear(box);
+    expect(await screen.findByText("SSO")).toBeInTheDocument();
   });
 
-  it("supports delete on rows in search results", async () => {
+  it("sorts the All tab by domain, then most-recently-updated within a domain", async () => {
     getActiveTabDomainMock.mockResolvedValueOnce("github.com");
-    // Active domain has nothing; search "git" surfaces gitlab.com.
+    // Out-of-order input: two amazon.com entries (older first) and a github one.
+    // Expected order: amazon.com (newer, then older), then github.com.
+    getAllEntriesMock.mockResolvedValue([
+      entry({ id: "g1", domain: "github.com", loginType: "GitHubLogin", updatedAt: 100 }),
+      entry({ id: "a-old", domain: "amazon.com", loginType: "AmazonOld", updatedAt: 1 }),
+      entry({ id: "a-new", domain: "amazon.com", loginType: "AmazonNew", updatedAt: 2 }),
+    ]);
+
+    render(<SignedInApp user={fakeUser as any} />);
+    await userEvent.click(await screen.findByRole("tab", { name: /^all$/i }));
+
+    // The login type is the row title; read them in DOM order.
+    const titles = (await screen.findAllByText(/Amazon(Old|New)|GitHubLogin/)).map(
+      (el) => el.textContent,
+    );
+    expect(titles).toEqual(["AmazonNew", "AmazonOld", "GitHubLogin"]);
+  });
+
+  it("searches across non-domain fields (login detail)", async () => {
+    getActiveTabDomainMock.mockResolvedValueOnce("github.com");
+    getAllEntriesMock.mockResolvedValue([
+      entry({ id: "e1", domain: "github.com", loginType: "Google", loginDetail: "me@home.test" }),
+      entry({ id: "x1", domain: "gitlab.com", loginType: "Email", loginDetail: "work@corp.test" }),
+    ]);
+
+    render(<SignedInApp user={fakeUser as any} />);
+    await userEvent.click(await screen.findByRole("tab", { name: /^all$/i }));
+
+    // Matching by an email fragment surfaces the gitlab entry, not the github one.
+    await userEvent.type(screen.getByRole("searchbox", { name: /search/i }), "corp");
+    expect(await screen.findByText("work@corp.test")).toBeInTheDocument();
+    expect(screen.queryByText("me@home.test")).not.toBeInTheDocument();
+  });
+
+  it("supports delete on rows in the All tab", async () => {
+    getActiveTabDomainMock.mockResolvedValueOnce("github.com");
+    // Active domain has nothing; the gitlab entry is reachable via the All tab.
     getAllEntriesMock
       .mockResolvedValueOnce([entry({ id: "x1", domain: "gitlab.com", loginType: "Email" })])
       .mockResolvedValueOnce([]);
     deleteEntryMock.mockResolvedValueOnce(undefined);
 
     render(<SignedInApp user={fakeUser as any} />);
-
-    const box = await screen.findByRole("searchbox", { name: /search/i });
-    await userEvent.type(box, "git");
-    await screen.findByText(/search results for/i);
+    await userEvent.click(await screen.findByRole("tab", { name: /^all$/i }));
 
     await userEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
     await userEvent.click(await screen.findByRole("button", { name: /confirm delete/i }));
@@ -311,7 +369,7 @@ describe("Cross-domain search", () => {
     await waitFor(() => expect(deleteEntryMock).toHaveBeenCalledWith("x1"));
   });
 
-  it("supports edit on rows in search results", async () => {
+  it("supports edit on rows in the All tab", async () => {
     getActiveTabDomainMock.mockResolvedValueOnce("github.com");
     getAllEntriesMock.mockResolvedValue([
       entry({ id: "x1", domain: "gitlab.com", loginType: "Email", loginDetail: "me@gl" }),
@@ -319,15 +377,55 @@ describe("Cross-domain search", () => {
     updateEntryMock.mockResolvedValueOnce(undefined);
 
     render(<SignedInApp user={fakeUser as any} />);
-
-    const box = await screen.findByRole("searchbox", { name: /search/i });
-    await userEvent.type(box, "git");
-    await screen.findByText(/search results for/i);
+    await userEvent.click(await screen.findByRole("tab", { name: /^all$/i }));
 
     await userEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
     await userEvent.type(screen.getByLabelText(/notes/i), "via SSO");
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(updateEntryMock).toHaveBeenCalledWith("x1", { notes: "via SSO" }));
+  });
+});
+
+describe("Tab switching", () => {
+  it("closes an open add form when a tab is clicked", async () => {
+    getActiveTabDomainMock.mockResolvedValueOnce("github.com");
+    getAllEntriesMock.mockResolvedValue([entry({ id: "e1", domain: "github.com" })]);
+
+    render(<SignedInApp user={fakeUser as any} />);
+    await userEvent.click(await screen.findByRole("button", { name: /add entry/i }));
+    // Form is open (its Domain field is present).
+    expect(screen.getByLabelText(/^domain$/i)).toBeInTheDocument();
+
+    // Clicking a tab abandons the form and returns to the list.
+    await userEvent.click(screen.getByRole("tab", { name: /^all$/i }));
+    expect(screen.queryByLabelText(/^domain$/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add entry/i })).toBeInTheDocument();
+  });
+});
+
+describe("Form dropdown coexistence", () => {
+  it("closes the saved-login dropdown when the login-type Select opens", async () => {
+    // Both dropdowns live in the same form. Opening the Radix login-type Select
+    // (which portals out and grabs focus) must not leave the saved-login list
+    // hanging open underneath it.
+    getActiveTabDomainMock.mockResolvedValueOnce("github.com");
+    getAllEntriesMock.mockResolvedValue([entry({ id: "e1", domain: "github.com" })]);
+
+    render(<SignedInApp user={fakeUser as any} />);
+    await userEvent.click(await screen.findByRole("button", { name: /add entry/i }));
+
+    // Open the saved-login dropdown.
+    await userEvent.click(screen.getByRole("button", { name: /show saved logins/i }));
+    // With no saved logins and an empty field there are no rows, so the "save"
+    // affordance won't show either; type a value to force the list open.
+    await userEvent.type(screen.getByLabelText(/login detail/i), "me@x.com");
+    expect(screen.getByRole("listbox", { name: /saved logins/i })).toBeInTheDocument();
+
+    // Opening the login-type Select should dismiss the saved-login list.
+    await userEvent.click(screen.getByRole("combobox", { name: /login type/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /saved logins/i })).not.toBeInTheDocument(),
+    );
   });
 });

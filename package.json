@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@radix-ui/react-select": "^2.3.0",
     "firebase": "^12.14.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

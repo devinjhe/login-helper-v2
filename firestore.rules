@@ -32,5 +32,23 @@ service cloud.firestore {
       allow delete: if request.auth != null
                     && request.auth.uid == resource.data.userId;
     }
+
+    // Saved logins — reusable credential values (e.g. common emails), scoped to
+    // the owning user. Value-only: no update rule (editing is delete + re-add).
+    // Keep the field lists in sync with `SavedLogin` in `src/lib/types.ts`.
+    match /savedLogins/{savedLoginId} {
+      // Read: only the document's owner.
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.userId;
+
+      // Create: authenticated, writing under their own UID, exact field shape.
+      allow create: if request.auth != null
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.keys().hasOnly(['userId', 'value', 'createdAt'])
+                    && request.resource.data.keys().hasAll(['userId', 'value', 'createdAt']);
+
+      allow delete: if request.auth != null
+                    && request.auth.uid == resource.data.userId;
+    }
   }
 }

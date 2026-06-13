@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { deleteEntry } from "@/lib/storage";
-import type { Entry } from "@/lib/types";
+import type { Entry, SavedLogin } from "@/lib/types";
 import { EntryForm } from "./EntryForm";
 
 type RowMode = "view" | "edit" | "confirmDelete";
@@ -8,11 +8,16 @@ type RowMode = "view" | "edit" | "confirmDelete";
 export function EntryRow({
   entry,
   onChanged,
-  showDomain,
+  savedLogins,
+  onSaveValue,
+  onDeleteSaved,
 }: {
   entry: Entry;
   onChanged: () => Promise<void> | void;
-  showDomain: boolean;
+  // Forwarded to the inline edit form for login-detail suggestions.
+  savedLogins: SavedLogin[];
+  onSaveValue: (value: string) => void | Promise<void>;
+  onDeleteSaved: (id: string) => void | Promise<void>;
 }) {
   const [mode, setMode] = useState<RowMode>("view");
   const [busy, setBusy] = useState(false);
@@ -28,6 +33,9 @@ export function EntryRow({
             setMode("view");
             await onChanged();
           }}
+          savedLogins={savedLogins}
+          onSaveValue={onSaveValue}
+          onDeleteSaved={onDeleteSaved}
         />
       </li>
     );
@@ -36,12 +44,12 @@ export function EntryRow({
   return (
     <li className="p-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-medium text-slate-900">{entry.loginType}</span>
-        <span className="text-xs text-slate-500">{relativeTime(entry.createdAt)}</span>
+        {/* Uniform across tabs: site is the headline, login type the subheader,
+            then the login detail. */}
+        <span className="truncate font-medium text-slate-900">{entry.domain}</span>
+        <span className="shrink-0 text-xs text-slate-500">{relativeTime(entry.createdAt)}</span>
       </div>
-      {showDomain ? (
-        <p className="mt-0.5 truncate text-xs text-slate-500">{entry.domain}</p>
-      ) : null}
+      <p className="mt-0.5 truncate text-xs text-slate-500">{entry.loginType}</p>
       {entry.loginDetail ? (
         <p className="mt-0.5 truncate text-slate-700">{entry.loginDetail}</p>
       ) : null}

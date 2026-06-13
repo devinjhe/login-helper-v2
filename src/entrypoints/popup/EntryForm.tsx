@@ -1,34 +1,30 @@
 import { useState } from "react";
 import { normalizeDomain } from "@/lib/domain";
 import { addEntry, updateEntry } from "@/lib/storage";
-import type { Entry, NewEntry } from "@/lib/types";
+import type { Entry, NewEntry, SavedLogin } from "@/lib/types";
 import { computePatch } from "./computePatch";
-
-const LOGIN_TYPE_SUGGESTIONS = ["Google", "GitHub", "Apple", "Email", "Username", "SSO"] as const;
+import { LoginTypeSelect } from "./LoginTypeSelect";
+import { SavedLoginInput } from "./SavedLoginInput";
 
 /**
- * Render the shared login-type datalist once at the popup root, so any
- * `<EntryForm>` (mounted inside `<EntryRow>` for edits, or at the popup
- * top level for adds) can reference it via `list="login-type-suggestions"`.
+ * Saved-login wiring shared by both form modes. The popup owns the list and the
+ * persistence callbacks (which refetch after a change); the form just renders
+ * the suggestion dropdown for the login-detail field.
  */
-export function LoginTypeSuggestions() {
-  return (
-    <datalist id="login-type-suggestions">
-      {LOGIN_TYPE_SUGGESTIONS.map((s) => (
-        <option key={s} value={s} />
-      ))}
-    </datalist>
-  );
+interface SavedLoginProps {
+  savedLogins: SavedLogin[];
+  onSaveValue: (value: string) => void | Promise<void>;
+  onDeleteSaved: (id: string) => void | Promise<void>;
 }
 
-interface AddProps {
+interface AddProps extends SavedLoginProps {
   initialEntry?: undefined;
   initialDomain: string;
   onCancel: () => void;
   onSaved: () => void | Promise<void>;
 }
 
-interface EditProps {
+interface EditProps extends SavedLoginProps {
   initialEntry: Entry;
   initialDomain?: undefined;
   onCancel: () => void;
@@ -130,24 +126,22 @@ export function EntryForm(props: EntryFormProps) {
       </Field>
 
       <Field id={`${idPrefix}-loginType`} label="Login type">
-        <input
+        <LoginTypeSelect
           id={`${idPrefix}-loginType`}
-          type="text"
+          ariaLabel="Login type"
           value={loginType}
-          onChange={(e) => setLoginType(e.target.value)}
-          list="login-type-suggestions"
-          className="w-full rounded border border-slate-300 px-2 py-1"
-          placeholder={isEdit ? undefined : "Google, Email, …"}
+          onChange={setLoginType}
         />
       </Field>
 
       <Field id={`${idPrefix}-loginDetail`} label="Login detail">
-        <input
+        <SavedLoginInput
           id={`${idPrefix}-loginDetail`}
-          type="text"
           value={loginDetail}
-          onChange={(e) => setLoginDetail(e.target.value)}
-          className="w-full rounded border border-slate-300 px-2 py-1"
+          onChange={setLoginDetail}
+          savedLogins={props.savedLogins}
+          onSaveValue={props.onSaveValue}
+          onDeleteSaved={props.onDeleteSaved}
           placeholder={isEdit ? undefined : "email, username, handle (optional)"}
         />
       </Field>

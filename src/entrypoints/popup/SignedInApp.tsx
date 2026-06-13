@@ -1,22 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { getActiveTabDomain } from "@/lib/domain";
-import { getAllEntries } from "@/lib/storage";
+import {
+  addSavedLogin,
+  deleteSavedLogin,
+  getAllEntries,
+  getSavedLogins,
+} from "@/lib/storage";
 import { signOutCurrentUser } from "@/lib/firebase";
-import type { Entry } from "@/lib/types";
-import { EntryForm, LoginTypeSuggestions } from "./EntryForm";
+import { entryMatches } from "@/lib/search";
+import type { Entry, SavedLogin } from "@/lib/types";
+import { EntryForm } from "./EntryForm";
 import { EntryList } from "./EntryList";
 
+/** Which set of entries the list draws from. */
+type View = "site" | "all";
+
 /**
- * The signed-in popup view. Two modes coexist:
+ * The signed-in popup view. A tab toggle picks the source list, and the search
+ * box filters within whichever tab is active (across all fields):
  *
- *   1. Suggest mode — entries for the active tab's domain. Default view on open.
- *   2. Search mode — when the search box has text, results filter across all
- *      entries by domain substring. Clearing the box returns to suggest mode.
+ *   1. "This site" (default) — entries for the active tab's domain.
+ *   2. "All" — every saved login, sorted for stable browsing.
  *
- * Single-fetch model: `getAllEntries()` runs once on mount. Suggest and search
- * views are pure derivations of that list, computed via `useMemo`. Mutations
- * (add/edit/delete) call `loadAll()` to refresh.
+ * Single-fetch model: `getAllEntries()` runs once on mount. Both tabs and the
+ * search filter are pure derivations of that list, computed via `useMemo`.
+ * Mutations (add/edit/delete) call `loadAll()` to refresh.
  *
  * Component-local state by design: a single screen, no second cross-component
  * shared value. Reach for Zustand only when that changes.
@@ -24,11 +33,12 @@ import { EntryList } from "./EntryList";
 export function SignedInApp({ user }: { user: User }) {
   const [activeDomain, setActiveDomain] = useState<string | null>(null);
   const [allEntries, setAllEntries] = useState<Entry[]>([]);
+  const [savedLogins, setSavedLogins] = useState<SavedLogin[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [view, setView] = useState<View>("site");
   const [searchQuery, setSearchQuery] = useState("");
-  const inSearchMode = searchQuery.trim().length > 0;
 
   // Monotonic load id. Ensures stale resolves don't clobber fresh state under
   // StrictMode or when a mutation triggers a refresh while one is in flight.
@@ -50,50 +60,100 @@ export function SignedInApp({ user }: { user: User }) {
     }
   }, []);
 
+  // Saved logins load independently of the entry list and its load-id race
+  // guard: it's a small secondary list, refreshed on its own mutations.
+  const loadSavedLogins = useCallback(async () => {
+    try {
+      setSavedLogins(await getSavedLogins());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load saved logins.");
+    }
+  }, []);
+
+  // Persist a new saved login, deduping case-insensitively so the suggestion
+  // list doesn't accumulate near-identical values.
+  const handleAddSavedLogin = useCallback(
+    async (value: string) => {
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (savedLogins.some((s) => s.value.toLowerCase() === trimmed.toLowerCase())) return;
+      try {
+        await addSavedLogin(trimmed);
+        await loadSavedLogins();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to save login.");
+      }
+    },
+    [savedLogins, loadSavedLogins],
+  );
+
+  const handleDeleteSavedLogin = useCallback(
+    async (id: string) => {
+      try {
+        await deleteSavedLogin(id);
+        await loadSavedLogins();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to delete saved login.");
+      }
+    },
+    [loadSavedLogins],
+  );
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const domain = await getActiveTabDomain();
       if (cancelled) return;
       setActiveDomain(domain);
-      await loadAll();
+      await Promise.all([loadAll(), loadSavedLogins()]);
     })();
     return () => {
       cancelled = true;
       loadIdRef.current++;
     };
-  }, [loadAll]);
+  }, [loadAll, loadSavedLogins]);
 
   const visibleEntries = useMemo(() => {
-    if (inSearchMode) {
-      const needle = searchQuery.trim().toLowerCase();
-      return allEntries.filter((e) => e.domain.toLowerCase().includes(needle));
-    }
-    if (!activeDomain) return [];
-    return allEntries.filter((e) => e.domain === activeDomain);
-  }, [allEntries, activeDomain, inSearchMode, searchQuery]);
+    // Source list from the active tab, then filter by the search query (all
+    // fields). "All" is sorted by domain then most-recently-updated for stable
+    // browsing; "This site" keeps its natural (single-domain) order.
+    const source =
+      view === "all"
+        ? [...allEntries].sort(
+            (a, b) => a.domain.localeCompare(b.domain) || b.updatedAt - a.updatedAt,
+          )
+        : activeDomain
+          ? allEntries.filter((e) => e.domain === activeDomain)
+          : [];
+    return searchQuery.trim() ? source.filter((e) => entryMatches(e, searchQuery)) : source;
+  }, [allEntries, activeDomain, view, searchQuery]);
 
   const handleAdded = async () => {
     setShowAddForm(false);
     await loadAll();
   };
 
+  // Switching tabs always returns to the list — abandoning an open add form,
+  // which belongs to the tab the user is leaving.
+  const selectView = (next: View) => {
+    setShowAddForm(false);
+    setView(next);
+  };
+
   return (
     <main className="w-96 p-4 font-sans text-sm text-slate-900">
-      <LoginTypeSuggestions />
       <header className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          {inSearchMode ? (
-            <p className="truncate text-slate-600">
-              Search results for{" "}
-              <span className="font-semibold text-slate-900">&quot;{searchQuery}&quot;</span>
-            </p>
-          ) : activeDomain ? (
-            <p className="truncate text-slate-600">
-              Entries for <span className="font-semibold text-slate-900">{activeDomain}</span>
-            </p>
+          {view === "site" ? (
+            activeDomain ? (
+              <p className="truncate text-slate-600">
+                Entries for <span className="font-semibold text-slate-900">{activeDomain}</span>
+              </p>
+            ) : (
+              <p className="text-slate-600">No active site detected.</p>
+            )
           ) : (
-            <p className="text-slate-600">No active site detected.</p>
+            <p className="text-slate-600">All saved logins</p>
           )}
           <p className="mt-0.5 truncate text-xs text-slate-500">{user.email ?? user.uid}</p>
         </div>
@@ -106,13 +166,22 @@ export function SignedInApp({ user }: { user: User }) {
         </button>
       </header>
 
+      <div role="tablist" aria-label="Entry view" className="mt-3 flex gap-1">
+        <TabButton selected={view === "site"} onClick={() => selectView("site")}>
+          This site
+        </TabButton>
+        <TabButton selected={view === "all"} onClick={() => selectView("all")}>
+          All
+        </TabButton>
+      </div>
+
       <input
         type="search"
-        aria-label="Search by domain substring"
-        placeholder="Search all domains…"
+        aria-label="Search entries"
+        placeholder={view === "all" ? "Search all logins…" : "Search this site…"}
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
-        className="mt-3 w-full rounded border border-slate-300 px-2 py-1"
+        className="mt-2 w-full rounded border border-slate-300 px-2 py-1"
       />
 
       {error ? (
@@ -123,47 +192,86 @@ export function SignedInApp({ user }: { user: User }) {
 
       {showAddForm ? (
         <EntryForm
-          initialDomain={activeDomain ?? ""}
+          initialDomain={view === "site" ? (activeDomain ?? "") : ""}
           onCancel={() => setShowAddForm(false)}
           onSaved={handleAdded}
+          savedLogins={savedLogins}
+          onSaveValue={handleAddSavedLogin}
+          onDeleteSaved={handleDeleteSavedLogin}
         />
       ) : (
         <>
-          <div className="mt-3">
+          {/* The list scrolls within a capped height so the Add entry button
+              below stays pinned in view instead of sitting past a long list. */}
+          <div className="mt-3 max-h-80 overflow-y-auto">
             {loading ? (
               <p className="text-slate-500">Loading…</p>
             ) : visibleEntries.length === 0 ? (
-              <EmptyState inSearchMode={inSearchMode} activeDomain={activeDomain} query={searchQuery} />
+              <EmptyState view={view} activeDomain={activeDomain} query={searchQuery} />
             ) : (
-              <EntryList entries={visibleEntries} onChanged={loadAll} showDomain={inSearchMode} />
+              <EntryList
+                entries={visibleEntries}
+                onChanged={loadAll}
+                savedLogins={savedLogins}
+                onSaveValue={handleAddSavedLogin}
+                onDeleteSaved={handleDeleteSavedLogin}
+              />
             )}
           </div>
-          {!inSearchMode ? (
-            <button
-              type="button"
-              onClick={() => setShowAddForm(true)}
-              className="mt-3 w-full rounded bg-slate-900 px-3 py-2 text-white hover:bg-slate-700"
-            >
-              Add entry
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setShowAddForm(true)}
+            className="mt-3 w-full rounded bg-slate-900 px-3 py-2 text-white hover:bg-slate-700"
+          >
+            Add entry
+          </button>
         </>
       )}
     </main>
   );
 }
 
+function TabButton({
+  selected,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={onClick}
+      className={
+        "rounded px-3 py-1 text-xs font-medium " +
+        (selected
+          ? "bg-slate-900 text-white"
+          : "border border-slate-300 text-slate-700 hover:bg-slate-50")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
 function EmptyState({
-  inSearchMode,
+  view,
   activeDomain,
   query,
 }: {
-  inSearchMode: boolean;
+  view: View;
   activeDomain: string | null;
   query: string;
 }) {
-  if (inSearchMode) {
+  if (query.trim()) {
     return <p className="text-slate-500">No entries match &quot;{query}&quot;.</p>;
+  }
+  if (view === "all") {
+    return <p className="text-slate-500">No saved logins yet — add one.</p>;
   }
   return (
     <p className="text-slate-500">

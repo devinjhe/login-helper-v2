@@ -10,7 +10,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { normalizeDomain, normalizeText } from "./domain";
-import type { Entry, EntryPatch, NewEntry } from "./types";
+import type { Entry, EntryPatch, NewEntry, SavedLogin } from "./types";
 
 /**
  * The only module that touches Firestore. Every read and write is scoped to
@@ -22,14 +22,16 @@ import type { Entry, EntryPatch, NewEntry } from "./types";
  * gate calls behind `useAuthUser`.
  *
  * The popup fetches all of a user's entries once on mount (`getAllEntries`)
- * and filters client-side for both suggest mode (active-tab domain) and
- * search mode (substring across all domains). Single-user, low-thousands of
- * entries — fine at this scale. If entry counts grow past ~1k or multi-user
- * collaboration appears, swap to a server-side index (Algolia/Typesense, or
- * maintain a lowercased `domainPrefixes` array with `array-contains-any`).
+ * and filters client-side: the "This site" tab keeps the active-tab domain,
+ * the "All" tab lists everything, and the search box filters within the active
+ * tab across all fields. Single-user, low-thousands of entries — fine at this
+ * scale. If entry counts grow past ~1k or multi-user collaboration appears,
+ * swap to a server-side index (Algolia/Typesense, or maintain a lowercased
+ * `domainPrefixes` array with `array-contains-any`).
  */
 
 const ENTRIES = "entries";
+const SAVED_LOGINS = "savedLogins";
 
 function requireUid(): string {
   const uid = auth.currentUser?.uid;
@@ -126,5 +128,61 @@ function toEntry(snap: { id: string; data: () => unknown }): Entry {
     userId: data.userId,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
+  };
+}
+
+// ── Saved logins ────────────────────────────────────────────────────────────
+// Reusable credential values (e.g. common emails) the user saves once and picks
+// when filling an entry's login detail. Value-only: no update path — editing is
+// delete + re-add. Same uid-scoping and trim-at-the-boundary discipline as
+// entries above.
+
+/**
+ * Fetch every saved login owned by the signed-in user. The popup loads these
+ * once on mount alongside `getAllEntries` and suggests them in the entry form.
+ */
+export async function getSavedLogins(): Promise<SavedLogin[]> {
+  const userId = requireUid();
+  const q = query(collection(db, SAVED_LOGINS), where("userId", "==", userId));
+  const snap = await getDocs(q);
+  return snap.docs.map(toSavedLogin);
+}
+
+/**
+ * Persist a reusable credential value. The value is trimmed here (the storage
+ * boundary); callers should dedupe (case-insensitively) before calling so the
+ * suggestion list stays clean.
+ */
+export async function addSavedLogin(value: string): Promise<SavedLogin> {
+  const userId = requireUid();
+  const payload = {
+    value: normalizeText(value),
+    userId,
+    createdAt: Date.now(),
+  };
+  const ref = await addDoc(collection(db, SAVED_LOGINS), payload);
+  return { id: ref.id, ...payload };
+}
+
+export async function deleteSavedLogin(id: string): Promise<void> {
+  // Ownership is enforced by `firestore.rules`; a cross-user delete fails server-side.
+  requireUid();
+  await deleteDoc(doc(db, SAVED_LOGINS, id));
+}
+
+function toSavedLogin(snap: { id: string; data: () => unknown }): SavedLogin {
+  const data = snap.data() as Partial<SavedLogin>;
+  if (
+    typeof data.value !== "string" ||
+    typeof data.userId !== "string" ||
+    typeof data.createdAt !== "number"
+  ) {
+    throw new Error(`Malformed saved login "${snap.id}": missing required fields.`);
+  }
+  return {
+    id: snap.id,
+    value: data.value,
+    userId: data.userId,
+    createdAt: data.createdAt,
   };
 }

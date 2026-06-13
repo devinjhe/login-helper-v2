@@ -33,3 +33,19 @@ export type NewEntry = Omit<Entry, "id" | "userId" | "createdAt" | "updatedAt">;
  * Firestore rules.
  */
 export type EntryPatch = Partial<Pick<Entry, "domain" | "loginType" | "loginDetail" | "notes">>;
+
+/**
+ * A reusable credential value (e.g. a commonly-used email or username) the user
+ * saves once and reuses across entries. Stored under `savedLogins/{id}`, scoped
+ * to the owning user. Value-only by design: editing means delete + re-add, so
+ * there is no update path (and no `updatedAt`).
+ */
+export interface SavedLogin {
+  id: string;
+  /** The credential value to reuse — e.g. "me@gmail.com". Trimmed on write. */
+  value: string;
+  /** Firebase Auth UID of the owning user. Every read/write is scoped on this. */
+  userId: string;
+  /** Epoch milliseconds. */
+  createdAt: number;
+}
